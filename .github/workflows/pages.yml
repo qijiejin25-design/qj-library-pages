@@ -2,7 +2,7 @@ name: Deploy Color Playground to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ['site/**']
+    paths: ['site/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,3 +26,43 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install browser test tools
+        run: |
+          npm install --no-save --package-lock=false --no-audit --no-fund @playwright/test@1.64.1
+          npx playwright install --with-deps chromium
+      - name: Check the live Color Playground
+        env:
+          LIVE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          node --input-type=module <<'JS'
+          import { chromium, expect } from '@playwright/test';
+          import { writeFile } from 'node:fs/promises';
+          const browser = await chromium.launch();
+          const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+          const response = await page.goto(process.env.LIVE_URL, { waitUntil: 'networkidle' });
+          if (response.status() !== 200) throw new Error(`HTTP ${response.status()}`);
+          await expect(page.getByRole('heading', { name: 'Color Playground.', exact: true })).toBeVisible();
+          await page.getByRole('button', { name: 'Butter', exact: true }).click();
+          await expect(page.getByRole('status')).toHaveText('Selected: Butter · #F2D675');
+          await page.getByRole('button', { name: 'Try next color', exact: true }).click();
+          await expect(page.getByRole('status')).toHaveText('Selected: Iris · #7261D1');
+          await expect(page.locator('.preview')).toHaveCSS('background-color', 'rgb(114, 97, 209)');
+          await page.screenshot({ path: 'live-demo.png', fullPage: true, animations: 'disabled' });
+          await writeFile('live-check.json', JSON.stringify({
+            url: page.url(), title: await page.title(), httpStatus: response.status(),
+            checks: ['heading visible', 'Butter selection', 'next color wraps to Iris'],
+            selected: await page.getByRole('status').innerText(),
+            verifiedAt: new Date().toISOString()
+          }, null, 2));
+          await browser.close();
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-demo-check
+          path: |
+            live-demo.png
+            live-check.json
+          retention-days: 7
